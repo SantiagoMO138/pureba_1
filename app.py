@@ -1,20 +1,28 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import func, extract, case, or_
+from models.model import Cliente, Reserva, Habitacion, Pago, PagoEfectivo, PagoTarjeta, PagoQr, Factura, Usuario
 from models.base import engine
-from models.model import Usuario, VideoGameSale
+
 from werkzeug.security import generate_password_hash, check_password_hash
+from flask_cors import CORS
 import os
-from flask import jsonify
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
-
 app.secret_key = os.environ.get("SECRET_KEY", "dev_key_fallback")
+CORS(app)
 
-# Crear sesión SQLAlchemy
+# Create SQLAlchemy session
 Session = sessionmaker(bind=engine)
 db_session = Session()
 
-# Setup de LoginManager
+# Setup Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'auth'
@@ -23,11 +31,10 @@ login_manager.login_view = 'auth'
 def load_user(user_id):
     return db_session.query(Usuario).get(int(user_id))
 
-# Ruta principal
+# Routes
 @app.route('/')
 def home():
     return render_template('auth.html')
-
 
 @app.route('/auth', methods=['GET', 'POST'])
 def auth():
@@ -36,32 +43,32 @@ def auth():
         username = request.form['username']
         password = request.form['password']
         if action == 'register':
-            if db_session.query(Usuario).filter(username == username).first():
-                flash('El usuario ya existe','danger')
+            if db_session.query(Usuario).filter_by(username=username).first():
+                flash('El usuario ya existe', 'danger')
             else:
                 new_user = Usuario(
-                    username=username, 
+                    username=username,
                     password=generate_password_hash(password)
                 )
                 db_session.add(new_user)
                 db_session.commit()
-                flash('Usuario creado exitosamente','success')  
+                flash('Usuario creado exitosamente', 'success')
                 return redirect(url_for('auth'))
         elif action == 'login':
-            user = db_session.query(Usuario).filter(username == username).first()
+            user = db_session.query(Usuario).filter_by(username=username).first()
             if user and check_password_hash(user.password, password):
                 login_user(user)
-                flash('Sesión iniciada exitosamente','success')
+                flash('Sesión iniciada exitosamente', 'success')
                 return redirect(url_for('dashboard'))
             else:
-                flash('Usuario o contraseña incorrectos','danger')
+                flash('Usuario o contraseña incorrectos', 'danger')
                 return redirect(url_for('auth'))
-    return render_template('auth.html')  # Renderizamos el formulario
+    return render_template('auth.html')
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    return render_template('dashboard.html', username= current_user.username)
+    return render_template('dashboard.html', username=current_user.username)
 
 @app.route('/logout')
 @login_required
@@ -69,163 +76,179 @@ def logout():
     logout_user()
     return redirect(url_for('auth'))
 
-#### Creacion y llamada ala BD
-@app.route('/api/video_games')
-def api_video_games():
-    print("API LLEGAMOS")
-    video_games = db_session.query(VideoGameSale).all()
-    ##print(video_games)
-    juegos=[]
-    for juego in video_games:
-        juegos.append({
-            "Name":juego.name,
-            "Platform":juego.platform,
-            "Year":juego.year,
-            "Genre":juego.genre,
-            "Publisher":juego.publisher,
-            "NA_Sales":juego.na_sales,
-            "EU_Sales":juego.eu_sales,
-            "JP_Sales":juego.jp_sales,
-            "Other_Sales":juego.other_sales,
-            "Global_Sales":juego.global_sales
-        })
-    ##print(juegos)
-    return jsonify(juegos)
-@app.route('/api/filtros', methods=['GET'])
-def obtener_filtros():
-    plataforma = request.args.getlist('plataforma')
-    genero = request.args.getlist('genero')
-    anio = request.args.getlist('anio')
-    editor = request.args.getlist('editor')
-
-    query = db_session.query(VideoGameSale)
-    print(plataforma)
-    if plataforma:
-        query = query.filter(VideoGameSale.platform.in_(plataforma))
-    if genero:
-        query = query.filter(VideoGameSale.genre.in_(genero))
-    if anio:
-        query = query.filter(VideoGameSale.year.in_(anio))
-    if editor:
-        query = query.filter(VideoGameSale.publisher.in_(editor))
-
-    data = query.all()
-
-    plataformas = sorted({v.platform for v in data if v.platform})
-    print(plataformas)
-    generos = sorted({v.genre for v in data if v.genre})
-    print(generos)
-    anios = sorted({v.year for v in data if v.year})
-    print(anios)
-    editores = sorted({v.publisher for v in data if v.publisher})
-    print(editores)
-    return jsonify({
-        'plataformas': plataformas,
-        'generos': generos,
-        'anios': anios,
-        'editores': editores
-    })
-
-@app.route('/listgames')
+@app.route('/listclientes')
 @login_required
-def listgames():
-    return render_template('crud/list.html')
+def listclientes():
+    return render_template('index.html')
 
-###### CRUD
+# API Routes for CRUD
+@app.route('/api/list_clientes', methods=['GET'])
+@login_required
+def api_list_clientes():
+    clientes = db_session.query(Cliente).all()
+    data = [
+        {
+            "id_cliente": c.id_cliente,
+            "ci": c.ci,
+            "nombre": c.nombre,
+            "telefono": c.telefono,
+            "correo_electronico": c.correo_electronico,
+            "lineadireccion1": c.lineadireccion1,
+            "lineadireccion2": c.lineadireccion2,
+            "ciudad": c.ciudad,
+            "region": c.region,
+            "pais": c.pais
+        } for c in clientes
+    ]
+    return jsonify(data)
 
-@app.route('/api/list_video_games')
-def api_list_video_games():
-    data = db_session.query(VideoGameSale).all()
-    
-    juegos = []
-    for juego in data:
-        
-        juegos.append({
-            "id": juego.id,
-            "Name": juego.name,
-            "Platform": juego.platform,
-            "Year": juego.year,
-            "Genre": juego.genre,
-            "Publisher": juego.publisher,
-            "NA_Sales": juego.na_sales,
-            "EU_Sales": juego.eu_sales,
-            "JP_Sales": juego.jp_sales,
-            "Other_Sales": juego.other_sales,
-            "Global_Sales": juego.global_sales
-        })
-
-    return jsonify(juegos)
-
-##para los combos de filtros
 @app.route('/api/opciones', methods=['GET'])
+@login_required
 def obtener_opciones():
-    plataformas = db_session.query(VideoGameSale.platform).distinct().all()
-    generos = db_session.query(VideoGameSale.genre).distinct().all()
-    editores = db_session.query(VideoGameSale.publisher).distinct().all()
-    anios = db_session.query(VideoGameSale.year).distinct().all()
-
+    ciudades = db_session.query(Cliente.ciudad).distinct().all()
+    regiones = db_session.query(Cliente.region).distinct().all()
+    paises = db_session.query(Cliente.pais).distinct().all()
     return jsonify({
-        "plataformas": sorted([p[0] for p in plataformas if p[0]]),
-        "generos": sorted([g[0] for g in generos if g[0]]),
-        "editores": sorted([e[0] for e in editores if e[0]]),
-        "anios": sorted([a[0] for a in anios if a[0]])
+        "ciudades": sorted([c[0] for c in ciudades if c[0]]),
+        "regiones": sorted([r[0] for r in regiones if r[0]]),
+        "paises": sorted([p[0] for p in paises if p[0]])
     })
 
-#### Agregar Videojuego
-@app.route('/add/video_games', methods=['POST'])
-def crear_videojuego():
-    data = request.json
-    nuevo = VideoGameSale(
-        rank=int(data.get('rank')),
-        name=data.get('name'),
-        platform=data.get('platform'),
-        year=int(data.get('year')) if data.get('year') else None,
-        genre=data.get('genre'),
-        publisher=data.get('publisher'),
-        na_sales=float(data.get('na_sales')),
-        eu_sales=float(data.get('eu_sales')),
-        jp_sales=float(data.get('jp_sales')),
-        other_sales=float(data.get('other_sales')),
-        global_sales=float(data.get('global_sales'))
-    )
-    db_session.add(nuevo)
-    db_session.commit()
-    return jsonify({"mensaje": "Videojuego agregado correctamente"})
-
-@app.route('/del/video_games/<int:id>', methods=['DELETE'])
-def eliminar_videojuego(id):
-    videojuego = db_session.query(VideoGameSale).get(id)
-    if videojuego:
-        db_session.delete(videojuego)
+@app.route('/add/clientes', methods=['POST'])
+@login_required
+def crear_cliente():
+    try:
+        data = request.json
+        nuevo = Cliente(
+            ci=data.get('ci'),
+            nombre=data.get('nombre'),
+            telefono=data.get('telefono'),
+            correo_electronico=data.get('correo_electronico'),
+            lineadireccion1=data.get('lineadireccion1'),
+            lineadireccion2=data.get('lineadireccion2'),
+            ciudad=data.get('ciudad'),
+            region=data.get('region'),
+            pais=data.get('pais')
+        )
+        db_session.add(nuevo)
         db_session.commit()
-        return jsonify({"mensaje": "Eliminado correctamente"})
-    return jsonify({"error": "Videojuego no encontrado"}), 404
+        return jsonify({"mensaje": "Cliente agregado correctamente"})
+    except Exception as e:
+        db_session.rollback()
+        return jsonify({"error": str(e)}), 400
 
+@app.route('/del/clientes/<int:id>', methods=['DELETE'])
+@login_required
+def eliminar_cliente(id):
+    cliente = db_session.query(Cliente).get(id)
+    if cliente:
+        db_session.delete(cliente)
+        db_session.commit()
+        return jsonify({"mensaje": "Cliente eliminado correctamente"})
+    return jsonify({"error": "Cliente no encontrado"}), 404
 
-@app.route('/upd/video_games/<int:id>', methods=['PUT'])
-def actualizar_videojuego(id):
-    data = request.json
-    juego = db_session.query(VideoGameSale).get(id)
-    if not juego:
-        return jsonify({"error": "No encontrado"}), 404
+@app.route('/upd/clientes/<int:id>', methods=['PUT'])
+@login_required
+def actualizar_cliente(id):
+    try:
+        data = request.json
+        cliente = db_session.query(Cliente).get(id)
+        if not cliente:
+            return jsonify({"error": "Cliente no encontrado"}), 404
+        cliente.ci = data.get("ci")
+        cliente.nombre = data.get("nombre")
+        cliente.telefono = data.get("telefono")
+        cliente.correo_electronico = data.get("correo_electronico")
+        cliente.lineadireccion1 = data.get("lineadireccion1")
+        cliente.lineadireccion2 = data.get("lineadireccion2")
+        cliente.ciudad = data.get("ciudad")
+        cliente.region = data.get("region")
+        cliente.pais = data.get("pais")
+        db_session.commit()
+        return jsonify({"mensaje": "Cliente actualizado correctamente"})
+    except Exception as e:
+        db_session.rollback()
+        return jsonify({"error": str(e)}), 400
 
-    juego.rank = int(data.get("rank"))
-    juego.name = data.get("name")
-    juego.platform = data.get("platform")
-    juego.year = int(data.get("year")) if data.get("year") else None
-    juego.genre = data.get("genre")
-    juego.publisher = data.get("publisher")
-    juego.na_sales = float(data.get("na_sales"))
-    juego.eu_sales = float(data.get("eu_sales"))
-    juego.jp_sales = float(data.get("jp_sales"))
-    juego.other_sales = float(data.get("other_sales"))
-    juego.global_sales = float(data.get("global_sales"))
+# API Routes for Dashboard Charts
+@app.route('/api/reservas_por_mes', methods=['GET'])
+@login_required
+def reservas_por_mes():
+    reservas = db_session.query(
+        func.to_char(Reserva.fecha_inicio, 'YYYY-MM').label('mes'),
+        func.count().label('total')
+    ).group_by('mes').order_by('mes').all()
+    data = [{"mes": r.mes, "total": r.total} for r in reservas]
+    return jsonify(data)
 
-    db_session.commit()
-    return jsonify({"mensaje": "Actualizado correctamente"})
+@app.route('/api/reservas_por_habitacion', methods=['GET'])
+@login_required
+def reservas_por_habitacion():
+    reservas = db_session.query(
+        Habitacion.id_habitacion,
+        func.coalesce(Habitacion.piso, 0).label('piso'),
+        func.count(Reserva.id_reserva).label('total')
+    ).outerjoin(Reserva, Habitacion.id_habitacion == Reserva.id_habitacion
+    ).group_by(Habitacion.id_habitacion, Habitacion.piso
+    ).order_by(Habitacion.id_habitacion).all()
+    data = [{"habitacion": f"Habitación {r.id_habitacion} (Piso {r.piso})", "total": r.total} for r in reservas]
+    return jsonify(data)
 
+@app.route('/api/pagos_por_metodo', methods=['GET'])
+@login_required
+def pagos_por_metodo():
+    try:
+        # Contar pagos por subtipo
+        efectivo = db_session.query(func.count(PagoEfectivo.id_pago)).scalar() or 0
+        tarjeta = db_session.query(func.count(PagoTarjeta.id_pago)).scalar() or 0
+        qr = db_session.query(func.count(PagoQr.id_pago)).scalar() or 0
+        total_pagos = db_session.query(func.count(Pago.id_pago)).scalar() or 0
+        sin_clasificar = total_pagos - (efectivo + tarjeta + qr)
 
+        labels = ["Efectivo", "Tarjeta", "QR", "Sin Clasificar"]
+        data = [efectivo, tarjeta, qr, sin_clasificar if sin_clasificar >= 0 else 0]
+        
+        logger.debug(f"Pagos por método: {labels} -> {data}")
+        return jsonify({"labels": labels, "data": data})
+    except Exception as e:
+        logger.error(f"Error en pagos_por_metodo: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
+@app.route('/api/facturas_por_mes', methods=['GET'])
+@login_required
+def facturas_por_mes():
+    facturas = db_session.query(
+        func.to_char(Factura.fecha, 'YYYY-MM').label('mes'),
+        func.sum(Factura.monto).label('total')
+    ).group_by('mes').order_by('mes').all()
+    data = [{"mes": r.mes, "total": float(r.total) if r.total else 0.0} for r in facturas]
+    return jsonify(data)
+
+@app.route('/api/metricas', methods=['GET'])
+@login_required
+def metricas():
+    # Mes Top de Reservas
+    mes_top = db_session.query(
+        func.to_char(Reserva.fecha_inicio, 'YYYY-MM').label('mes'),
+        func.count().label('total')
+    ).group_by('mes').order_by(func.count().desc()).first()
+    
+    # Total Facturado
+    total_facturado = db_session.query(func.sum(Factura.monto)).scalar() or 0.0
+    
+    # Total de Reservas
+    total_reservas = db_session.query(Reserva).count()
+    
+    # Clientes Activos (con al menos una reserva)
+    clientes_activos = db_session.query(func.count(func.distinct(Reserva.id_cliente))).scalar()
+    
+    return jsonify({
+        "mes_top": mes_top.mes if mes_top else "N/A",
+        "reservas_mes_top": mes_top.total if mes_top else 0,
+        "total_facturado": float(total_facturado),
+        "total_reservas": total_reservas,
+        "clientes_activos": clientes_activos
+    })
 
 if __name__ == '__main__':
     app.run(debug=True)
